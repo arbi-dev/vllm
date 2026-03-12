@@ -72,6 +72,7 @@ class IrOpPriorityConfig:
         """
         import vllm.kernels  # noqa: F401, registers IR op implementations
         from vllm.ir.op import IrOp
+        from vllm.model_executor.layers.batch_invariant import vllm_is_batch_invariant
 
         with contextlib.ExitStack() as stack:
             for field in fields(self):
@@ -83,7 +84,11 @@ class IrOpPriorityConfig:
                     "Setting IR op priority for %s to %s", field.name, op_priority
                 )
                 ir_op = IrOp.registry[field.name]
-                stack.enter_context(ir_op.set_priority(op_priority))
+                stack.enter_context(
+                    ir_op.set_priority(
+                        op_priority, batch_invariant_only=vllm_is_batch_invariant()
+                    )
+                )
 
             yield
 
