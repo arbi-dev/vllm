@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, field_validator
 
+from vllm import envs
 from vllm.config.utils import config, get_hash_factors, hash_factors
 from vllm.logger import init_logger
 
@@ -72,7 +73,6 @@ class IrOpPriorityConfig:
         """
         import vllm.kernels  # noqa: F401, registers IR op implementations
         from vllm.ir.op import IrOp
-        from vllm.model_executor.layers.batch_invariant import vllm_is_batch_invariant
 
         with contextlib.ExitStack() as stack:
             for field in fields(self):
@@ -86,7 +86,7 @@ class IrOpPriorityConfig:
                 ir_op = IrOp.registry[field.name]
                 stack.enter_context(
                     ir_op.set_priority(
-                        op_priority, batch_invariant_only=vllm_is_batch_invariant()
+                        op_priority, batch_invariant_only=envs.VLLM_BATCH_INVARIANT
                     )
                 )
 
