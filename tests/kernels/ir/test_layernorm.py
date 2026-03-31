@@ -106,7 +106,7 @@ class TestRMSNorm:
         # exact match
         torch.testing.assert_close(out_impl2, out_impl, rtol=0.0, atol=0.0)
 
-        if not impl.provider == "native":
+        if impl.provider != "native":
             # none of the kernels support variance_size override
             assert not impl.supports_args(x, weight, epsilon, 4)
             assert not impl.supports_args(x, weight, epsilon, variance_size=4)
