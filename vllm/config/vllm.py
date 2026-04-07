@@ -993,6 +993,17 @@ class VllmConfig:
                         CUDAGraphMode.FULL_DECODE_ONLY
                     )
 
+            # TQKV: use FULL_DECODE_ONLY (no torch.compile, custom_ops=all)
+            if (self.cache_config
+                    and self.cache_config.cache_dtype == "tqkv"):
+                from vllm.config.compilation import CompilationMode
+                logger.info("TQ KV cache: FULL_DECODE_ONLY CUDAGraph "
+                            "(custom_ops=all, fused norms).")
+                self.compilation_config.cudagraph_mode = (
+                    CUDAGraphMode.FULL_DECODE_ONLY)
+                self.compilation_config.mode = CompilationMode.NONE
+                self.compilation_config.custom_ops = ["all"]
+
             # Check if KV connector requires PIECEWISE mode for CUDA graphs
             if (
                 self.kv_transfer_config is not None

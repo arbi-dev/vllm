@@ -194,6 +194,9 @@ class HybridAttentionMambaModelConfig(VerifyAndUpdateConfig):
 
         if cache_config.cache_dtype == "auto":
             kv_cache_dtype = model_config.dtype
+        elif cache_config.cache_dtype == "tqkv":
+            # TQKV manages its own KV cache format; skip dtype validation
+            return
         else:
             kv_cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_config.cache_dtype]
 
