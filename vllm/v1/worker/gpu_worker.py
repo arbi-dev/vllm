@@ -440,7 +440,7 @@ class Worker(WorkerBase):
         # for the decompress buffer at inference time.
         if str(self.cache_config.cache_dtype) == "tqkv":
             import os
-            _tqkv_reserve_mib = int(os.environ.get("TQKV_RESERVE_MIB", "1024"))
+            _tqkv_reserve_mib = int(os.environ.get("TQKV_RESERVE_MIB", "2048"))
             _tqkv_reserve = _tqkv_reserve_mib * 1024 * 1024
             self.available_kv_cache_memory_bytes = max(
                 0, self.available_kv_cache_memory_bytes - _tqkv_reserve)
