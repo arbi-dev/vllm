@@ -420,6 +420,20 @@ class Worker(WorkerBase):
             - cudagraph_memory_estimate_applied
         )
 
+        # For compressed KV backends (TQKV), the profiler over-counts
+        # activation memory (includes mamba/GDN state that won't grow with
+        # KV cache). Fall back to actual free memory after profiling.
+        if self.available_kv_cache_memory_bytes <= 0:
+            actual_free = free_gpu_memory - (
+                self.init_snapshot.free_memory - self.requested_memory)
+            if actual_free > 0:
+                logger.warning(
+                    "Profiler reports 0 KV cache memory, but %s GiB is "
+                    "actually free after profiling. Using actual free memory.",
+                    format_gib(actual_free),
+                )
+                self.available_kv_cache_memory_bytes = int(actual_free)
+
         unrequested_memory = self.init_snapshot.free_memory - self.requested_memory
         logger.debug(
             "Initial free memory: %s GiB; Requested memory: %f (util), %s GiB",

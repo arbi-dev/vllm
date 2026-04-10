@@ -526,7 +526,22 @@ class Attention(nn.Module, AttentionLayerBase):
         # Should not be called for enc-dec or encoder-only attention.
         assert self.attn_type == AttentionType.DECODER
         quant_mode = get_kv_quant_mode(self.kv_cache_dtype)
-        if self.sliding_window is not None:
+        if self.kv_cache_dtype == "tqkv":
+            # TQKV handles both full and sliding-window attention layers.
+            # Must check before sliding_window so sliding layers get TQKV
+            # compressed storage instead of bf16 SlidingWindowSpec.
+            from vllm.v1.attention.backends.tqkv import (
+                TQKVFullAttentionSpec,
+            )
+            return TQKVFullAttentionSpec(
+                block_size=block_size,
+                num_kv_heads=self.num_kv_heads,
+                head_size=self.head_size,
+                head_size_v=self.head_size_v,
+                dtype=self.kv_cache_torch_dtype,
+                sliding_window=self.sliding_window,
+            )
+        elif self.sliding_window is not None:
             assert not vllm_config.model_config.use_mla, (
                 "MLA is not supported for slidingwindow"
             )

@@ -1014,6 +1014,23 @@ class VllmConfig:
                         CUDAGraphMode.FULL_DECODE_ONLY
                     )
 
+            # TQKV: FA4/adaptive prefill engines support FULL_AND_PIECEWISE CG
+            if self.cache_config.cache_dtype == "tqkv":
+                import os as _os
+                _tq_engine = _os.environ.get("TQKV_PREFILL_ENGINE", "adaptive")
+                if _tq_engine in ("fa4", "adaptive"):
+                    logger.info(
+                        "TQ KV cache: FULL_AND_PIECEWISE CUDAGraph "
+                        "(%s prefill).", _tq_engine)
+                    self.compilation_config.cudagraph_mode = (
+                        CUDAGraphMode.FULL_AND_PIECEWISE
+                    )
+                else:
+                    logger.info("TQ KV cache: FULL_DECODE_ONLY CUDAGraph.")
+                    self.compilation_config.cudagraph_mode = (
+                        CUDAGraphMode.FULL_DECODE_ONLY
+                    )
+
             # Check if KV connector requires PIECEWISE mode for CUDA graphs
             if (
                 self.kv_transfer_config is not None

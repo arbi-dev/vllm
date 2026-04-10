@@ -97,6 +97,11 @@ def get_attn_backend(
         use_non_causal=use_non_causal,
     )
 
+    # TQKV handles its own backend — bypass platform selector.
+    if kv_cache_dtype == "tqkv":
+        from vllm.v1.attention.backends.tqkv import TQKVAttentionBackend
+        return TQKVAttentionBackend
+
     return _cached_get_attn_backend(
         backend=vllm_config.attention_config.backend,
         attn_selector_config=attn_selector_config,

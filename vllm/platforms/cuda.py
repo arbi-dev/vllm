@@ -125,15 +125,20 @@ def _get_backend_priorities(
                 AttentionBackendEnum.FLASHMLA_SPARSE,
             ]
     else:
+        # TQKV compressed KV cache — must be first so validate_configuration
+        # can accept kv_cache_dtype="tqkv" before other backends reject it.
+        tqkv_prefix = []
+        if kv_cache_dtype == "tqkv":
+            tqkv_prefix = [AttentionBackendEnum.TQKV]
         if device_capability.major == 10:
-            return [
+            return tqkv_prefix + [
                 AttentionBackendEnum.FLASHINFER,
                 AttentionBackendEnum.FLASH_ATTN,
                 AttentionBackendEnum.TRITON_ATTN,
                 AttentionBackendEnum.FLEX_ATTENTION,
             ]
         else:
-            return [
+            return tqkv_prefix + [
                 AttentionBackendEnum.FLASH_ATTN,
                 AttentionBackendEnum.FLASHINFER,
                 AttentionBackendEnum.TRITON_ATTN,

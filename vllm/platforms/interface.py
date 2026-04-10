@@ -521,6 +521,10 @@ class Platform:
         model_config = vllm_config.model_config
         parallel_config = vllm_config.parallel_config
 
+        # TQKV uses per-group BlockPool — skip hybrid page unification
+        if str(cache_config.cache_dtype) == "tqkv":
+            return
+
         if cache_config.cache_dtype == "auto":
             kv_cache_dtype = model_config.dtype
         else:
