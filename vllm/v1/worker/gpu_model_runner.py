@@ -6884,8 +6884,15 @@ class GPUModelRunner(
             ]
         )
         num_groups = len(self.kv_cache_config.kv_cache_groups)
+        if self.kv_cache_config.per_group_num_blocks is not None:
+            attn_group_count = max(1, sum(
+                1 for nb in self.kv_cache_config.per_group_num_blocks
+                if nb == self.kv_cache_config.num_blocks
+            ))
+        else:
+            attn_group_count = num_groups
         self.max_num_kv_tokens = (
-            self.kv_cache_config.num_blocks // num_groups
+            self.kv_cache_config.num_blocks // attn_group_count
         ) * min_block_size
         dcp_size = self.vllm_config.parallel_config.decode_context_parallel_size
         pcp_size = self.vllm_config.parallel_config.prefill_context_parallel_size
