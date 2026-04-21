@@ -6560,6 +6560,7 @@ class GPUModelRunner(
                         kv_cache_spec.num_kv_heads,
                         kv_cache_spec.head_size,
                         cache_dtype_str=self.cache_config.cache_dtype,
+                        kv_cache_spec=kv_cache_spec,
                     )
                     dtype = kv_cache_spec.dtype
                     try:
