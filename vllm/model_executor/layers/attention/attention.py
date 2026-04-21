@@ -353,6 +353,15 @@ class Attention(nn.Module, AttentionLayerBase):
             )
 
         impl_cls = self.attn_backend.get_impl_cls()
+        # Let the TQKV backend look up per-layer allocation at init time so
+        # it can set the correct codec bit widths before the slot layout is frozen.
+        if kv_cache_dtype == "tqkv" and "_tq_layer_idx" not in extra_impl_args:
+            try:
+                from vllm.model_executor.models.utils import extract_layer_index
+                _tq_lidx = extract_layer_index(prefix)
+                extra_impl_args = {**extra_impl_args, "_tq_layer_idx": _tq_lidx}
+            except Exception:
+                pass
         self.impl = impl_cls(  # type: ignore[assignment]  # impl_cls always returns an AttentionImpl subclass
             num_heads,
             head_size,

@@ -1041,6 +1041,18 @@ def unify_kv_cache_spec_page_size(
                     new_block_size = (max_page_size // per_token // 16) * 16
                     if new_block_size < 16:
                         new_block_size = 16
+                    # TQKV stores kv_cache as uint8 and uses .view(torch.int32)
+                    # on it, which requires stride(1) = max_page_size //
+                    # new_block_size to be divisible by 4. Reduce in steps of
+                    # 16 until the constraint is met.
+                    while (max_page_size // new_block_size) % 4 != 0:
+                        new_block_size -= 16
+                        if new_block_size < 16:
+                            raise NotImplementedError(
+                                f"Cannot find 4-aligned block_size for TQKV "
+                                f"page unification: max_page_size="
+                                f"{max_page_size}, per_token={per_token}"
+                            )
                     # Safety check: ensure tokens fit within padded page
                     if new_block_size * per_token > max_page_size:
                         raise NotImplementedError(
@@ -1328,16 +1340,27 @@ def get_kv_cache_config_from_groups(
         if o1_groups and on_groups:
             # Split allocation: fixed mamba pool + dynamic attention pool
             max_seqs = vllm_config.scheduler_config.max_num_seqs
-            # Mamba needs 1 block per sequence (2 for "align" with speculation)
+            # Mamba needs 1 block per sequence in "none" mode, 2 in "align"
+            # mode (current + committed boundary). Mirror
+            # MambaSpec.max_memory_usage_bytes.
+            _align_factor = (
+                2 if vllm_config.cache_config.mamba_cache_mode == "align" else 1
+            )
             mamba_blocks_per_seq = max(
-                1 + g.kv_cache_spec.num_speculative_blocks
+                _align_factor + g.kv_cache_spec.num_speculative_blocks
                 for g in o1_groups
                 if isinstance(g.kv_cache_spec, MambaSpec)
             )
             # +1 for the null_block that BlockPool always reserves
             mamba_blocks = max_seqs * mamba_blocks_per_seq + 1
+            # Each o1_group contains len(layer_names) independent layer
+            # tensors, each with its own mamba_blocks-sized pool. Budget
+            # must reflect the TOTAL across all layers, matching the
+            # allocation loop below (for i in range(group_size)
+            # × for group in o1_groups).
             mamba_per_slot = sum(
-                g.kv_cache_spec.page_size_bytes for g in o1_groups
+                len(g.layer_names) * g.kv_cache_spec.page_size_bytes
+                for g in o1_groups
             )
             mamba_memory = mamba_per_slot * mamba_blocks
 
