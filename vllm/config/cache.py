@@ -137,6 +137,13 @@ class CacheConfig:
     kv_cache_dtype_skip_layers: list[str] = field(default_factory=list)
     """Layer patterns to skip KV cache quantization. Accepts layer indices
     (e.g., '0', '2', '4') or attention type names (e.g., 'sliding_window')."""
+    kv_cache_dtype_skip_layers_dtype: str = "auto"
+    """KV cache dtype to use for layers skipped by `kv_cache_dtype_skip_layers`.
+    Defaults to "auto" (= model's native bf16/fp16). Setting this to "fp8",
+    "fp8_e4m3", or "fp8_e5m2" halves the KV bytes for skip layers at
+    near-lossless quality — useful for recovering capacity lost to boundary
+    protection. Env var `VLLM_KV_CACHE_SKIP_LAYERS_DTYPE` overrides this
+    field when the field is default ("auto")."""
     mamba_page_size_padded: int | None = None
     """ Optional override for mamba page size; used by hybrid mamba/attention
     models to ensure exact alignment with attention page size."""
