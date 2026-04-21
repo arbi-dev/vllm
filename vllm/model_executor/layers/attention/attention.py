@@ -259,9 +259,20 @@ class Attention(nn.Module, AttentionLayerBase):
             if str(layer_idx) in cache_config.kv_cache_dtype_skip_layers:
                 skip = True
             if skip:
-                kv_cache_dtype = "auto"
-                calculate_kv_scales = False
-            logger.debug(
+                # Env override takes effect only when the config field is
+                # at its default "auto" — CLI / programmatic values win.
+                skip_dtype = getattr(
+                    cache_config, "kv_cache_dtype_skip_layers_dtype",
+                    "auto")
+                if skip_dtype == "auto":
+                    import os
+                    skip_dtype = os.environ.get(
+                        "VLLM_KV_CACHE_SKIP_LAYERS_DTYPE", "auto")
+                kv_cache_dtype = skip_dtype
+                # fp8 skip layers need scale computation (default 1.0 when
+                # not checkpoint-baked). bf16/auto skip layers don't.
+                calculate_kv_scales = kv_cache_dtype.startswith("fp8")
+            logger.info(
                 "Layer %s: kv_cache_dtype=%s, sliding_window=%s",
                 prefix,
                 kv_cache_dtype,
