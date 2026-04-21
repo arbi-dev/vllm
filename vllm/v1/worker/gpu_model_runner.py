@@ -6554,13 +6554,23 @@ class GPUModelRunner(
                     )
                     kernel_num_blocks = num_blocks * num_blocks_per_kv_block
 
-                    kv_cache_shape = attn_backend.get_kv_cache_shape(
+                    # Pass kv_cache_spec only to backends that accept it
+                    # (e.g. TQKV plugin for per-layer bit-width selection).
+                    import inspect as _inspect
+                    _shape_fn = attn_backend.get_kv_cache_shape
+                    _shape_extra = (
+                        {"kv_cache_spec": kv_cache_spec}
+                        if "kv_cache_spec" in _inspect.signature(
+                            _shape_fn).parameters
+                        else {}
+                    )
+                    kv_cache_shape = _shape_fn(
                         kernel_num_blocks,
                         kernel_block_size,
                         kv_cache_spec.num_kv_heads,
                         kv_cache_spec.head_size,
                         cache_dtype_str=self.cache_config.cache_dtype,
-                        kv_cache_spec=kv_cache_spec,
+                        **_shape_extra,
                     )
                     dtype = kv_cache_spec.dtype
                     try:
