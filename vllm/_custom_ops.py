@@ -29,7 +29,8 @@ try:
 except ImportError:
     _GEMM_AVAILABLE = False
 import os as _os_gemm
-_USE_CUSTOM_GEMM = _os_gemm.environ.get("VLLM_USE_CUSTOM_GEMM") == "1"
+# Default ON — set VLLM_USE_CUSTOM_GEMM=0 to disable.
+_USE_CUSTOM_GEMM = _os_gemm.environ.get("VLLM_USE_CUSTOM_GEMM", "1") != "0"
 _LOGGED_CUSTOM_GEMM = False
 
 if TYPE_CHECKING:
