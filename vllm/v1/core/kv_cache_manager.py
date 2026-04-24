@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, overload
 
@@ -165,6 +165,10 @@ class KVCacheManager:
         self.empty_kv_cache_blocks = KVCacheBlocks(
             tuple(() for _ in range(self.num_kv_cache_groups))
         )
+
+        # Pre-step callbacks for external (plugin) KV backends; fired
+        # from new_step_starts() before coordinator bookkeeping.
+        self._pre_step_callbacks: list[Callable[["KVCacheManager"], None]] = []
 
     @property
     def usage(self) -> float:
@@ -581,5 +585,47 @@ class KVCacheManager:
         return ids
 
     def new_step_starts(self) -> None:
-        """Called when a new step is started."""
+        """Called when a new step is started. Pre-step callbacks fire
+        BEFORE coordinator bookkeeping so any block_pool free they issue
+        is visible to this step's allocate_slots()."""
+        for cb in self._pre_step_callbacks:
+            try:
+                cb(self)
+            except Exception:
+                logger.exception("Pre-step KV callback %r raised.", cb)
         self.coordinator.new_step_starts()
+
+    def register_pre_step_callback(
+        self, cb: Callable[["KVCacheManager"], None]
+    ) -> None:
+        """Register a pre-step callback (idempotent)."""
+        if cb not in self._pre_step_callbacks:
+            self._pre_step_callbacks.append(cb)
+
+    def drain_request_blocks(
+        self, request_id: str, block_ids: Sequence[int]
+    ) -> int:
+        """Null ``request_id`` slots in each single_type_manager matching
+        ``block_ids``, then batch free to the pool. Mirrors
+        :meth:`SingleTypeKVCacheManager.remove_skipped_blocks`; UAF-safe
+        because req_to_blocks is mutated before any reallocation. Ref-count
+        semantics handled by :meth:`BlockPool.free_blocks`."""
+        if not block_ids:
+            return 0
+        wanted = set(block_ids)
+        freed_total = 0
+        for manager in self.coordinator.single_type_managers:
+            req_blocks = manager.req_to_blocks.get(request_id)
+            if not req_blocks:
+                continue
+            to_free: list[KVCacheBlock] = []
+            for i, blk in enumerate(req_blocks):
+                if blk is manager._null_block:
+                    continue
+                if blk.block_id in wanted:
+                    to_free.append(blk)
+                    req_blocks[i] = manager._null_block
+            if to_free:
+                manager.block_pool.free_blocks(to_free)
+                freed_total += len(to_free)
+        return freed_total
