@@ -18,6 +18,20 @@ logger = init_logger(__name__)
 
 current_platform.import_kernels()
 
+# Optional fast path for SM_89 fp8 rowwise+colwise scaled GEMM. The arbi-dev
+# `gemm` package (https://github.com/arbi-dev/tqkv) provides a CUTLASS bare
+# GEMM + Triton rescale that avoids the visitor-tree epilogue's register
+# spills on Ada — measured 2.19x over stock cutlass_scaled_mm at typical
+# Linear shapes. Gated by VLLM_USE_CUSTOM_GEMM=1; default OFF.
+try:
+    import gemm as _gemm  # noqa: F401  -- registers torch.ops.gemm.fp8_split_mm
+    _GEMM_AVAILABLE = True
+except ImportError:
+    _GEMM_AVAILABLE = False
+import os as _os_gemm
+_USE_CUSTOM_GEMM = _os_gemm.environ.get("VLLM_USE_CUSTOM_GEMM") == "1"
+_LOGGED_CUSTOM_GEMM = False
+
 if TYPE_CHECKING:
 
     def register_fake(fn):
@@ -916,6 +930,15 @@ def cutlass_scaled_mm(
         )
 
         out = triton_scaled_mm(a, b, scale_a, scale_b, out_dtype, bias)
+    elif (_USE_CUSTOM_GEMM
+          and _GEMM_AVAILABLE
+          and _gemm.fp8_split_mm.is_eligible(a, b, scale_a, scale_b, out_dtype)):
+        # SM_89 fast path — gemm package's CUTLASS+Triton split kernel.
+        global _LOGGED_CUSTOM_GEMM
+        if not _LOGGED_CUSTOM_GEMM:
+            logger.info("[gemm] SM_89 fp8 split-mm path active")
+            _LOGGED_CUSTOM_GEMM = True
+        out = torch.ops.gemm.fp8_split_mm(a, b, scale_a, scale_b, bias)
     else:
         out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
         torch.ops._C.cutlass_scaled_mm(out, a, b, scale_a, scale_b, bias)
