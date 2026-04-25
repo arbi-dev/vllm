@@ -29,11 +29,13 @@ try:
 except ImportError:
     _GEMM_AVAILABLE = False
 import os as _os_gemm
-# Default ON — set VLLM_USE_CUSTOM_GEMM=0 to disable.
-_USE_CUSTOM_GEMM = _os_gemm.environ.get("VLLM_USE_CUSTOM_GEMM", "1") != "0"
+# Default OFF — opt-in via VLLM_USE_CUSTOM_GEMM=1. The split-kernel approach
+# wins 2.19x at a single big GEMM (M=2048, N=6144, K=1024) but loses 0.5-0.82x
+# end-to-end at decode-step batched M due to dual-launch overhead and tile
+# mismatch. May still help for prefill-heavy throughput benchmarks.
+_USE_CUSTOM_GEMM = _os_gemm.environ.get("VLLM_USE_CUSTOM_GEMM", "0") == "1"
 if _GEMM_AVAILABLE and _USE_CUSTOM_GEMM:
-    logger.info("[gemm] SM_89 fp8 split-mm path enabled "
-                "(set VLLM_USE_CUSTOM_GEMM=0 to disable)")
+    logger.info("[gemm] SM_89 fp8 split-mm path enabled via VLLM_USE_CUSTOM_GEMM=1")
 
 if TYPE_CHECKING:
 
