@@ -37,6 +37,13 @@ _USE_CUSTOM_GEMM = _os_gemm.environ.get("VLLM_USE_CUSTOM_GEMM", "0") == "1"
 if _GEMM_AVAILABLE and _USE_CUSTOM_GEMM:
     logger.info("[gemm] SM_89 fp8 split-mm path enabled via VLLM_USE_CUSTOM_GEMM=1")
 
+# Triton fused fp8 GEMM with rowwise+colwise scaling baked into the epilogue.
+# One kernel (single launch), no HBM round-trip, autotuned per (M,N,K) shape.
+# Lives in the gemm package; we just check availability + env flag here.
+_USE_TRITON_FUSED_FP8 = _os_gemm.environ.get("VLLM_USE_TRITON_FUSED_FP8", "0") == "1"
+if _USE_TRITON_FUSED_FP8 and _GEMM_AVAILABLE:
+    logger.info("[gemm] Triton fused fp8 path enabled via VLLM_USE_TRITON_FUSED_FP8=1")
+
 if TYPE_CHECKING:
 
     def register_fake(fn):
@@ -928,6 +935,12 @@ def cutlass_scaled_mm(
         # NOTE: no logger calls in this branch (Dynamo can't trace them).
         out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
         torch.ops.gemm.fp8_split_mm(out, a, b, scale_a, scale_b, bias)
+    elif (_USE_TRITON_FUSED_FP8 and _GEMM_AVAILABLE
+          and _gemm.triton_fused.is_eligible(a, b, scale_a, scale_b, out_dtype)):
+        # Triton fused fp8 GEMM — single kernel, M-dispatched tile.
+        # is_eligible() gates by M >= 64 so we never regress vs stock CUTLASS.
+        out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
+        torch.ops.vllm_fp8.triton_fused_mm(out, a, b, scale_a, scale_b, bias)
     else:
         out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
         torch.ops._C.cutlass_scaled_mm(out, a, b, scale_a, scale_b, bias)
