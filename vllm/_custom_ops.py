@@ -31,7 +31,9 @@ except ImportError:
 import os as _os_gemm
 # Default ON — set VLLM_USE_CUSTOM_GEMM=0 to disable.
 _USE_CUSTOM_GEMM = _os_gemm.environ.get("VLLM_USE_CUSTOM_GEMM", "1") != "0"
-_LOGGED_CUSTOM_GEMM = False
+if _GEMM_AVAILABLE and _USE_CUSTOM_GEMM:
+    logger.info("[gemm] SM_89 fp8 split-mm path enabled "
+                "(set VLLM_USE_CUSTOM_GEMM=0 to disable)")
 
 if TYPE_CHECKING:
 
@@ -935,10 +937,8 @@ def cutlass_scaled_mm(
           and _GEMM_AVAILABLE
           and _gemm.fp8_split_mm.is_eligible(a, b, scale_a, scale_b, out_dtype)):
         # SM_89 fast path — gemm package's CUTLASS+Triton split kernel.
-        global _LOGGED_CUSTOM_GEMM
-        if not _LOGGED_CUSTOM_GEMM:
-            logger.info("[gemm] SM_89 fp8 split-mm path active")
-            _LOGGED_CUSTOM_GEMM = True
+        # NOTE: no logger calls in this branch — torch.compile traces this
+        # function and Dynamo can't handle logger.info at trace time.
         out = torch.ops.gemm.fp8_split_mm(a, b, scale_a, scale_b, bias)
     else:
         out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
