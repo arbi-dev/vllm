@@ -38,11 +38,13 @@ if _GEMM_AVAILABLE and _USE_CUSTOM_GEMM:
     logger.info("[gemm] SM_89 fp8 split-mm path enabled via VLLM_USE_CUSTOM_GEMM=1")
 
 # Triton fused fp8 GEMM with rowwise+colwise scaling baked into the epilogue.
-# One kernel (single launch), no HBM round-trip, autotuned per (M,N,K) shape.
-# Lives in the gemm package; we just check availability + env flag here.
-_USE_TRITON_FUSED_FP8 = _os_gemm.environ.get("VLLM_USE_TRITON_FUSED_FP8", "0") == "1"
+# One kernel (single launch), no HBM round-trip, BLOCK_M-dispatched per (M).
+# Default ON — wins 1.02x-1.38x e2e decode tok/s vs vllm's CUTLASS visitor-tree
+# path on Qwen3-0.6B and Qwen2.5-3B fp8-dynamic, RTX 4090, B={8,32,64,128}.
+_USE_TRITON_FUSED_FP8 = _os_gemm.environ.get("VLLM_USE_TRITON_FUSED_FP8", "1") != "0"
 if _USE_TRITON_FUSED_FP8 and _GEMM_AVAILABLE:
-    logger.info("[gemm] Triton fused fp8 path enabled via VLLM_USE_TRITON_FUSED_FP8=1")
+    logger.info("[gemm] Triton fused fp8 path enabled "
+                "(set VLLM_USE_TRITON_FUSED_FP8=0 to disable)")
 
 if TYPE_CHECKING:
 
