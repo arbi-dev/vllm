@@ -18,29 +18,18 @@ logger = init_logger(__name__)
 
 current_platform.import_kernels()
 
-# Optional fast path for SM_89 fp8 rowwise+colwise scaled GEMM. The arbi-dev
-# `gemm` package (https://github.com/arbi-dev/tqkv) provides a CUTLASS bare
-# GEMM + Triton rescale that avoids the visitor-tree epilogue's register
-# spills on Ada — measured 2.19x over stock cutlass_scaled_mm at typical
-# Linear shapes. Gated by VLLM_USE_CUSTOM_GEMM=1; default OFF.
+# SM_89 fp8 rowwise+colwise scaled GEMM fast path. The arbi-dev `gemm`
+# package (https://github.com/arbi-dev/tqkv) provides a single Triton kernel
+# with `tl.dot fp8` mma + in-register rowwise+colwise scaling that beats
+# vllm's CUTLASS visitor-tree path 1.04x-1.49x e2e decode tok/s on
+# Qwen3-0.6B and Qwen2.5-3B fp8-dynamic at RTX 4090.
+# Default ON — set VLLM_USE_TRITON_FUSED_FP8=0 to fall back to stock CUTLASS.
 try:
-    import gemm as _gemm  # noqa: F401  -- registers torch.ops.gemm.fp8_split_mm
+    import gemm as _gemm  # noqa: F401  -- registers torch.ops.vllm_fp8.triton_fused_mm
     _GEMM_AVAILABLE = True
 except ImportError:
     _GEMM_AVAILABLE = False
 import os as _os_gemm
-# Default OFF — opt-in via VLLM_USE_CUSTOM_GEMM=1. The split-kernel approach
-# wins 2.19x at a single big GEMM (M=2048, N=6144, K=1024) but loses 0.5-0.82x
-# end-to-end at decode-step batched M due to dual-launch overhead and tile
-# mismatch. May still help for prefill-heavy throughput benchmarks.
-_USE_CUSTOM_GEMM = _os_gemm.environ.get("VLLM_USE_CUSTOM_GEMM", "0") == "1"
-if _GEMM_AVAILABLE and _USE_CUSTOM_GEMM:
-    logger.info("[gemm] SM_89 fp8 split-mm path enabled via VLLM_USE_CUSTOM_GEMM=1")
-
-# Triton fused fp8 GEMM with rowwise+colwise scaling baked into the epilogue.
-# One kernel (single launch), no HBM round-trip, BLOCK_M-dispatched per (M).
-# Default ON — wins 1.02x-1.38x e2e decode tok/s vs vllm's CUTLASS visitor-tree
-# path on Qwen3-0.6B and Qwen2.5-3B fp8-dynamic, RTX 4090, B={8,32,64,128}.
 _USE_TRITON_FUSED_FP8 = _os_gemm.environ.get("VLLM_USE_TRITON_FUSED_FP8", "1") != "0"
 if _USE_TRITON_FUSED_FP8 and _GEMM_AVAILABLE:
     logger.info("[gemm] Triton fused fp8 path enabled "
@@ -944,18 +933,11 @@ def cutlass_scaled_mm(
         )
 
         out = triton_scaled_mm(a, b, scale_a, scale_b, out_dtype, bias)
-    elif (_USE_CUSTOM_GEMM
-          and _GEMM_AVAILABLE
-          and _gemm.fp8_split_mm.is_eligible(a, b, scale_a, scale_b, out_dtype)):
-        # SM_89 fast path — gemm package's CUTLASS+Triton split kernel.
-        # CUDAGraph-safe: pre-allocate `out`, op writes in-place.
-        # NOTE: no logger calls in this branch (Dynamo can't trace them).
-        out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
-        torch.ops.gemm.fp8_split_mm(out, a, b, scale_a, scale_b, bias)
     elif (_USE_TRITON_FUSED_FP8 and _GEMM_AVAILABLE
           and _gemm.triton_fused.is_eligible(a, b, scale_a, scale_b, out_dtype)):
-        # Triton fused fp8 GEMM — single kernel, M-dispatched tile.
-        # is_eligible() gates by M >= 64 so we never regress vs stock CUTLASS.
+        # SM_89 fast path — Triton fused fp8 GEMM, single kernel, M-dispatched
+        # tile. CUDAGraph-safe: pre-allocate `out`, op writes in-place.
+        # NOTE: no logger calls in this branch (Dynamo can't trace them).
         out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
         torch.ops.vllm_fp8.triton_fused_mm(out, a, b, scale_a, scale_b, bias)
     else:
