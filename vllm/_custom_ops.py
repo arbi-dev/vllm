@@ -937,9 +937,10 @@ def cutlass_scaled_mm(
           and _GEMM_AVAILABLE
           and _gemm.fp8_split_mm.is_eligible(a, b, scale_a, scale_b, out_dtype)):
         # SM_89 fast path — gemm package's CUTLASS+Triton split kernel.
-        # NOTE: no logger calls in this branch — torch.compile traces this
-        # function and Dynamo can't handle logger.info at trace time.
-        out = torch.ops.gemm.fp8_split_mm(a, b, scale_a, scale_b, bias)
+        # CUDAGraph-safe: pre-allocate `out`, op writes in-place.
+        # NOTE: no logger calls in this branch (Dynamo can't trace them).
+        out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
+        torch.ops.gemm.fp8_split_mm(out, a, b, scale_a, scale_b, bias)
     else:
         out = torch.empty((a.shape[0], b.shape[1]), dtype=out_dtype, device=a.device)
         torch.ops._C.cutlass_scaled_mm(out, a, b, scale_a, scale_b, bias)
