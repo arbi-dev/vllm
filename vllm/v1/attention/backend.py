@@ -162,12 +162,42 @@ class AttentionBackend(ABC):
         return dtype in cls.supported_dtypes
 
     @classmethod
+    def get_supported_kv_cache_dtypes(cls) -> list[str]:
+        """List of kv_cache_dtype names this backend accepts.
+
+        Default returns the static `supported_kv_cache_dtypes` ClassVar.
+        Override to compute dynamically — e.g. plugin backends that
+        register custom dtype names at import time can return
+        `[*cls.supported_kv_cache_dtypes, "my_custom_dtype"]` without
+        mutating the class attribute.
+        """
+        return list(cls.supported_kv_cache_dtypes)
+
+    @classmethod
+    def get_kv_cache_spec_class(cls, spec_kind: str = "full") -> type | None:
+        """KVCacheSpec subclass to use for this backend's layers, or None
+        to fall through to vLLM's default spec construction.
+
+        spec_kind: "full" | "sliding_window" | "mla". Plugin backends
+        with custom layouts (e.g. compressed KV) override this and
+        return their own spec class; the default of None means "I'm
+        fine with vLLM's stock spec."
+        """
+        return None
+
+    def get_gather_op(self):
+        """Custom replacement for vLLM's gather_and_maybe_dequant_cache
+        op, or None to use the default. Used by MLA backends that store
+        KV in a non-standard format and need a backend-aware gather.
+        """
+        return None
+
+    @classmethod
     def supports_kv_cache_dtype(cls, kv_cache_dtype: "CacheDType | None") -> bool:
         if kv_cache_dtype is None:
             return True
-        return (not cls.supported_kv_cache_dtypes) or (
-            kv_cache_dtype in cls.supported_kv_cache_dtypes
-        )
+        supported = cls.get_supported_kv_cache_dtypes()
+        return (not supported) or (kv_cache_dtype in supported)
 
     @classmethod
     def supports_block_size(cls, block_size: int | None) -> bool:
