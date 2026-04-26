@@ -109,6 +109,17 @@ class KVCacheSpec:
         """
         raise NotImplementedError
 
+    @classmethod
+    def get_manager_class(cls):
+        """Return the SingleTypeKVCacheManager subclass that handles this
+        spec, or None to fall through to the module-level
+        `spec_manager_map` lookup.
+
+        Plugin specs override this so they don't need to mutate
+        `spec_manager_map` at plugin registration time.
+        """
+        return None
+
     def copy_with_new_block_size(self, block_size: int) -> Self:
         """
         Create a new KVCacheSpec from self but replacing the block size.

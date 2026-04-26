@@ -609,6 +609,33 @@ class Attention(nn.Module, AttentionLayerBase):
         # Should not be called for enc-dec or encoder-only attention.
         assert self.attn_type == AttentionType.DECODER
         quant_mode = get_kv_quant_mode(self.kv_cache_dtype)
+        # Backend-declared spec class takes precedence. Plugin backends
+        # with custom KV layouts override get_kv_cache_spec_class on
+        # the AttentionBackend subclass; if they return None we fall
+        # through to the existing stock-spec branches below (including
+        # upstream's `turboquant_*` path).
+        spec_kind = "sliding_window" if self.sliding_window is not None else "full"
+        custom_spec_cls = self.attn_backend.get_kv_cache_spec_class(spec_kind)
+        if custom_spec_cls is not None:
+            if self.sliding_window is not None:
+                assert not vllm_config.model_config.use_mla, (
+                    "MLA is not supported for slidingwindow"
+                )
+                return custom_spec_cls(
+                    block_size=block_size,
+                    num_kv_heads=self.num_kv_heads,
+                    head_size=self.head_size,
+                    head_size_v=self.head_size_v,
+                    dtype=self.kv_cache_torch_dtype,
+                    sliding_window=self.sliding_window,
+                )
+            return custom_spec_cls(
+                block_size=block_size,
+                num_kv_heads=self.num_kv_heads,
+                head_size=self.head_size,
+                head_size_v=self.head_size_v,
+                dtype=self.kv_cache_torch_dtype,
+            )
         if self.sliding_window is not None:
             assert not vllm_config.model_config.use_mla, (
                 "MLA is not supported for slidingwindow"

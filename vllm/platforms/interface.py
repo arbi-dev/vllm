@@ -533,23 +533,23 @@ class Platform:
 
         kv_quant_mode = get_kv_quant_mode(cache_config.cache_dtype)
 
-        # Compute attention page size for 1 token
-        if model_config.use_mla:
-            attn_page_size_1_token = MLAAttentionSpec(
-                block_size=1,
-                num_kv_heads=model_config.get_num_kv_heads(parallel_config),
-                head_size=model_config.get_head_size(),
-                dtype=kv_cache_dtype,
-                kv_quant_mode=kv_quant_mode,
-            ).page_size_bytes
-        else:
-            attn_page_size_1_token = FullAttentionSpec(
-                block_size=1,
-                num_kv_heads=model_config.get_num_kv_heads(parallel_config),
-                head_size=model_config.get_head_size(),
-                dtype=kv_cache_dtype,
-                kv_quant_mode=kv_quant_mode,
-            ).page_size_bytes
+        # Compute attention page size for 1 token. The spec class is
+        # backend-declared when the backend opts in (overrides
+        # get_kv_cache_spec_class), else falls through to the stock
+        # MLAAttentionSpec/FullAttentionSpec. This lets compressed-KV
+        # backends size hybrid pages correctly without monkey-patching
+        # AttentionSpec.real_page_size_bytes.
+        spec_kind = "mla" if model_config.use_mla else "full"
+        spec_cls = backend_cls.get_kv_cache_spec_class(spec_kind)
+        if spec_cls is None:
+            spec_cls = MLAAttentionSpec if model_config.use_mla else FullAttentionSpec
+        attn_page_size_1_token = spec_cls(
+            block_size=1,
+            num_kv_heads=model_config.get_num_kv_heads(parallel_config),
+            head_size=model_config.get_head_size(),
+            dtype=kv_cache_dtype,
+            kv_quant_mode=kv_quant_mode,
+        ).page_size_bytes
 
         # Compute mamba page size
         model_cls, _ = ModelRegistry.resolve_model_cls(
