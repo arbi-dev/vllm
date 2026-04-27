@@ -526,6 +526,13 @@ class Platform:
         model_config = vllm_config.model_config
         parallel_config = vllm_config.parallel_config
 
+        # TQKV uses per-group BlockPool — attention and mamba live in
+        # separate per-group pools each sized from its own spec. Forcing
+        # attention block_size up to match mamba page size collapses
+        # attention KV capacity by ~100x on hybrid models.
+        if str(cache_config.cache_dtype) == "tqkv":
+            return
+
         if cache_config.cache_dtype == "auto":
             kv_cache_dtype = model_config.dtype
         else:
