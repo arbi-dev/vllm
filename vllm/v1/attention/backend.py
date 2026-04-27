@@ -242,6 +242,33 @@ class AttentionBackend(ABC):
         """
         pass
 
+    @classmethod
+    def wraps_mla_backend(cls, base_mla_backend_cls):
+        """If this backend can wrap a stock MLA backend (e.g. compress
+        its shared-KV slot), return the wrapper class. Default: None
+        (don't wrap; standard MLA backend selection applies).
+
+        Consulted by the selector when:
+          - user passed --attention-backend selecting THIS backend
+          - the layer being constructed has use_mla=True
+
+        When this returns non-None for THIS backend class:
+          1. The selector falls through to standard MLA candidate
+             selection (ignoring the user's --attention-backend choice
+             for the MLA layer, since CUSTOM=this isn't an MLA backend).
+          2. The dtype gate is effectively lifted for that selection
+             (kv_cache_dtype is treated as "auto") — the wrapper
+             class is responsible for declaring the real supported
+             dtypes via get_supported_kv_cache_dtypes().
+          3. The picked MLA backend is then passed to wraps_mla_backend
+             and the returned wrapper is used.
+
+        Use case: a compressed-KV backend (TQKV) that wraps any of
+        TritonMLABackend / FlashAttnMLABackend / etc. with a
+        TurboQuantMLA wrapper.
+        """
+        return None
+
     @staticmethod
     def resolve_user_selected_backend(vllm_config) -> "type[AttentionBackend] | None":
         """Resolve the user-selected attention backend class from
