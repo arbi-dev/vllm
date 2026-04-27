@@ -170,6 +170,20 @@ class KVCacheManager:
         # from new_step_starts() before coordinator bookkeeping.
         self._pre_step_callbacks: list[Callable[["KVCacheManager"], None]] = []
 
+        # Backend lifecycle hook: lets the user-selected attention backend
+        # register pre-step callbacks or other manager-side state. Used
+        # by compressed-KV backends with a cold-tier eviction adapter.
+        try:
+            from vllm.config import get_current_vllm_config
+            from vllm.v1.attention.backend import AttentionBackend
+            _vllm_cfg = get_current_vllm_config()
+            _backend_cls = AttentionBackend.resolve_user_selected_backend(_vllm_cfg)
+            if _backend_cls is not None:
+                _backend_cls.on_kv_manager_created(self)
+        except Exception:
+            # Hook is advisory; never fatal during manager construction.
+            pass
+
     @property
     def usage(self) -> float:
         """Get the KV cache usage.

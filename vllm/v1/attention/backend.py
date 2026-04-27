@@ -194,6 +194,74 @@ class AttentionBackend(ABC):
         """
         return None
 
+    # ── Lifecycle hooks ───────────────────────────────────────────────────
+    # All three are optional classmethods with no-op defaults. vLLM calls
+    # them on the user-SELECTED backend (vllm_config.attention_config.backend),
+    # if any.
+    #
+    # Note: scheduler/compilation defaults (max_num_batched_tokens,
+    # cudagraph_mode, max_num_seqs, etc.) are deliberately NOT a backend
+    # hook. Those are user-facing config — backends document recommended
+    # values in their README and users set them via CLI flags. Silently
+    # mutating user config from a backend hook is the wrong abstraction.
+
+    @classmethod
+    def adjust_kv_budget(
+        cls,
+        profiled_bytes: int,
+        vllm_config,
+    ) -> int | None:
+        """Optionally adjust the profiler-derived KV budget. Called from
+        Worker.determine_available_memory just before returning.
+
+        Return a new bytes value, or None to accept the profiled budget.
+        Use case: compressed-KV backend on a hybrid model where the
+        profiler over-counts non-KV memory and underestimates the
+        available KV budget.
+        """
+        return None
+
+    @classmethod
+    def on_model_loaded(cls, worker, model) -> None:
+        """Called once per worker after Worker.load_model finishes.
+        Receives the worker and the loaded model module.
+
+        Use case: compressed-KV backend that wants to apply a one-time
+        weight transformation (e.g. fold a per-layer matrix into the
+        downstream Linear weight) without the worker holding a model
+        reference for the backend to capture.
+        """
+        pass
+
+    @classmethod
+    def on_kv_manager_created(cls, mgr) -> None:
+        """Called once per KVCacheManager construction. Receives the
+        manager instance.
+
+        Use case: compressed-KV backend with a cold-tier eviction
+        adapter that needs to register a pre-step callback on the
+        manager.
+        """
+        pass
+
+    @staticmethod
+    def resolve_user_selected_backend(vllm_config) -> "type[AttentionBackend] | None":
+        """Resolve the user-selected attention backend class from
+        vllm_config.attention_config.backend (set by --attention-backend).
+
+        Returns None if no backend is selected or resolution fails.
+        Call sites firing the lifecycle/config hooks above use this to
+        find the right backend class to dispatch on.
+        """
+        attn_cfg = getattr(vllm_config, "attention_config", None)
+        backend_enum = getattr(attn_cfg, "backend", None) if attn_cfg else None
+        if backend_enum is None:
+            return None
+        try:
+            return backend_enum.get_class()
+        except (ValueError, ImportError):
+            return None
+
     @classmethod
     def supports_kv_cache_dtype(cls, kv_cache_dtype: "CacheDType | None") -> bool:
         if kv_cache_dtype is None:
