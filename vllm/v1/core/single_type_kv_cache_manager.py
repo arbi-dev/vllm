@@ -1128,6 +1128,11 @@ spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
 def get_manager_for_kv_cache_spec(
     kv_cache_spec: KVCacheSpec, **kwargs
 ) -> SingleTypeKVCacheManager:
-    manager_class = spec_manager_map[type(kv_cache_spec)]
+    # Spec-declared manager takes precedence over the static map. Plugin
+    # specs override get_manager_class() so they don't need to mutate
+    # spec_manager_map at registration time.
+    manager_class = type(kv_cache_spec).get_manager_class()
+    if manager_class is None:
+        manager_class = spec_manager_map[type(kv_cache_spec)]
     manager = manager_class(kv_cache_spec, **kwargs)
     return manager
