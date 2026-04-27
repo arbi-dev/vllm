@@ -601,33 +601,6 @@ class Platform:
                 kernel_block_alignment_size * attn_page_size_1_token,
             )
 
-        # Opt-in: when set, attention pages stay at the user/backend
-        # preferred small size and mamba gets its own per-group pool. The
-        # default (homogeneous single-pool) path raises attention block_size
-        # to match mamba page size, which on hybrid models like Qwen3-Next
-        # collapses attention KV capacity by ~100x. The gate is opt-in
-        # while we validate downstream code paths don't assume the
-        # post-alignment block_size; once verified, this should become the
-        # default behavior whenever the hybrid manager is active.
-        import os as _os
-        _skip_align = (
-            _os.environ.get("TQKV_SKIP_HYBRID_ALIGN", "0") == "1"
-            and not vllm_config.scheduler_config.disable_hybrid_kv_cache_manager
-        )
-        if _skip_align:
-            # Mamba still needs its own block size for the mamba kernels;
-            # set it to the raw mamba page width (not aligned to attention).
-            if cache_config.mamba_cache_mode in ("align", "all"):
-                cache_config.mamba_block_size = mamba_block_size or attn_block_size
-            logger.info(
-                "TQKV: skipping hybrid attn↔mamba block-size alignment "
-                "(TQKV_SKIP_HYBRID_ALIGN=1). Attention block_size stays at %d, "
-                "mamba_block_size=%d. Per-group BlockPool will size each pool "
-                "independently.",
-                cache_config.block_size, cache_config.mamba_block_size or 0,
-            )
-            return
-
         if cache_config.block_size < attn_block_size:
             cache_config.block_size = attn_block_size
             logger.info(
