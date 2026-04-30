@@ -643,3 +643,44 @@ class KVCacheManager:
                 manager.block_pool.free_blocks(to_free)
                 freed_total += len(to_free)
         return freed_total
+
+    def allocate_archive_blocks(
+        self, request_id: str, num_blocks: int
+    ) -> list[int]:
+        """Allocate ``num_blocks`` fresh physical pages from the same
+        block pool that backs :meth:`allocate_slots`, append them to
+        ``request_id``'s ``req_to_blocks`` in each single_type_manager,
+        and return the new ``block_id`` list.
+
+        Companion to :meth:`drain_request_blocks` for cold-tier 3-zone
+        retention: the cold-tier hot path drains source pages and
+        immediately allocates archive pages to hold the heavy hitters.
+
+        Does NOT advance the request's logical seq_len — caller adjusts
+        ``compacted_seq_lens`` separately to account for the dropped
+        slots in the eviction zone.
+
+        Raises ``ValueError`` if the pool is too short on capacity. The
+        cold-tier mediator must have called
+        :meth:`get_num_free_blocks` first to gate the allocation.
+        """
+        if num_blocks <= 0:
+            return []
+        # Allocate from the first single_type_manager's block_pool;
+        # all single_type_managers share the same pool by construction
+        # in vLLM's V1 (see ``KVCacheCoordinator``).
+        block_pool = self.coordinator.single_type_managers[0].block_pool
+        new_blocks = block_pool.get_new_blocks(num_blocks)
+        # Append to every single_type_manager's req_to_blocks for this
+        # request — keeps the per-manager block_table tensors in sync.
+        for manager in self.coordinator.single_type_managers:
+            req_blocks = manager.req_to_blocks.get(request_id)
+            if req_blocks is None:
+                # The request is not registered with this manager (can
+                # happen when a hybrid model has manager kinds that
+                # don't apply to the request, e.g. mamba-only path on a
+                # hybrid attn+mamba model). Skip — the manager that
+                # does own this request will handle it.
+                continue
+            req_blocks.extend(new_blocks)
+        return [b.block_id for b in new_blocks]
