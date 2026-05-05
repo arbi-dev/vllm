@@ -67,6 +67,15 @@ def validate_cache_dtype(name: str) -> str:
     return name
 
 
+def is_plugin_cache_dtype(name: str) -> bool:
+    """Return True if ``name`` was registered via ``register_cache_dtype``.
+
+    Used by arg post-processing to auto-default ``--attention-backend`` to
+    ``CUSTOM`` when the user selects a plugin-registered KV cache dtype.
+    """
+    return name in _PLUGIN_CACHE_DTYPES
+
+
 MambaDType = Literal["auto", "float32", "float16"]
 MambaCacheMode = Literal["all", "align", "none"]
 PrefixCachingHashAlgo = Literal["sha256", "sha256_cbor", "xxhash", "xxhash_cbor"]
