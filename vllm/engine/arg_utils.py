@@ -69,7 +69,6 @@ from vllm.config.cache import (
     MambaCacheMode,
     MambaDType,
     PrefixCachingHashAlgo,
-    is_plugin_cache_dtype,
 )
 from vllm.config.device import Device
 from vllm.config.kernel import IrOpPriorityConfig, MoEBackend
@@ -2019,56 +2018,6 @@ class EngineArgs:
             # Reuse the validator to handle "auto" and string-to-enum conversion
             attention_config.backend = AttentionConfig.validate_backend_before(
                 self.attention_backend
-            )
-
-        # Bidirectional auto-pairing for plugin KV-cache dtype + attention
-        # backend. Plugin dtypes (e.g. ``tqkv``) ship paired with a specific
-        # AttentionBackend (e.g. ``TURBO_ATTN``); the ``--kv-cache-dtype`` and
-        # ``--attention-backend`` flags should be redundant — passing one
-        # auto-fills the other. An explicit user choice for either flag is
-        # honoured untouched. The pairing table lives here (and not in the
-        # plugin) because it covers builtins as well: ``turboquant_*`` →
-        # FlashAttention 2 forced below.
-        from vllm.v1.attention.backends.registry import (
-            AttentionBackendEnum,
-        )
-
-        # Forward: dtype → backend. ``tqkv`` is the only plugin dtype today
-        # with a dedicated named slot; other plugins share the generic
-        # CUSTOM slot until they earn their own enum entry.
-        if attention_config.backend is None and is_plugin_cache_dtype(
-            resolved_cache_dtype
-        ):
-            paired = (
-                AttentionBackendEnum.TURBO_ATTN
-                if resolved_cache_dtype == "tqkv"
-                else AttentionBackendEnum.CUSTOM
-            )
-            attention_config.backend = paired
-            logger.info(
-                "Auto-selecting attention backend %s for "
-                "plugin-registered kv-cache dtype %r. Pass "
-                "--attention-backend to override.",
-                paired.name,
-                resolved_cache_dtype,
-            )
-
-        # Reverse: backend → dtype. ``--attention-backend turbo-attn`` with
-        # ``--kv-cache-dtype auto`` should resolve dtype to ``tqkv`` (the
-        # paired storage). Pre-existing ``"auto"`` resolution at line 1633
-        # already ran, so check both the resolved value and the raw arg —
-        # the user may have intentionally left it at "auto".
-        if (
-            attention_config.backend is AttentionBackendEnum.TURBO_ATTN
-            and resolved_cache_dtype == "auto"
-        ):
-            resolved_cache_dtype = "tqkv"
-            self.kv_cache_dtype = "tqkv"
-            cache_config.cache_dtype = "tqkv"
-            logger.info(
-                "Auto-selecting kv-cache dtype 'tqkv' for "
-                "attention backend TURBO_ATTN. Pass "
-                "--kv-cache-dtype to override.",
             )
 
         # TurboQuant requires FlashAttention 2 — FA3 boundary layers assert
