@@ -6828,6 +6828,26 @@ class GPUModelRunner(
         """
         kv_cache_config = deepcopy(kv_cache_config)
         self.kv_cache_config = kv_cache_config
+        # Composite-spec hook: when a KV cache group's spec carries
+        # `per_layer_offsets` (TQKV smart-quant heterogeneous bits), the
+        # spec was built in EngineCore (different process) and arrives
+        # here via IPC. Walk the groups once and publish the per-layer
+        # byte slice map to a worker-process module-global so per-layer
+        # backends can look it up by layer_name in their forward path.
+        # Keyed off the attribute name so the hook is a no-op for
+        # non-TQKV specs.
+        for grp in kv_cache_config.kv_cache_groups:
+            offsets = getattr(grp.kv_cache_spec, "per_layer_offsets", None)
+            if offsets is None:
+                continue
+            try:
+                from tqkv.integrations.vllm import backend as _tqkv_backend
+            except Exception:
+                continue
+            if _tqkv_backend._TQKV_LAYER_OFFSETS is None:
+                _tqkv_backend._TQKV_LAYER_OFFSETS = dict(offsets)
+            else:
+                _tqkv_backend._TQKV_LAYER_OFFSETS.update(offsets)
         self._mamba_copy_bufs = None
         self.may_add_encoder_only_layers_to_kv_cache_config()
         self.maybe_add_kv_sharing_layers_to_kv_cache_groups(kv_cache_config)
