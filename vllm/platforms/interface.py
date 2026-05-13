@@ -526,12 +526,17 @@ class Platform:
         model_config = vllm_config.model_config
         parallel_config = vllm_config.parallel_config
 
-        # TQKV uses per-group BlockPool — attention and mamba live in
-        # separate per-group pools each sized from its own spec. Forcing
-        # attention block_size up to match mamba page size collapses
-        # attention KV capacity by ~100x on hybrid models.
-        if str(cache_config.cache_dtype) == "tqkv":
-            return
+        # NOTE: the historic `if cache_config.cache_dtype == "tqkv": return`
+        # bypass was removed (was commit 98d98daa42, "hybrid: skip page-size
+        # unification for TQKV"). That early-return left attention
+        # block_size at 32 while mamba pages remained ~hundreds of KiB,
+        # causing the planner to over-report attention KV capacity by ~100x
+        # (e.g. 19.1M tokens at 10.64 GiB on Qwen3.6-27B — physically
+        # impossible at 144 B/token/layer × 16 attn layers ≈ 44 GiB).
+        # TQKV participates in the same hybrid alignment as every other
+        # KV dtype; the alignment uses each spec's own page_size_bytes so
+        # TQ-compressed pages contribute their real (smaller) size to the
+        # mamba-page-size LCM.
 
         if cache_config.cache_dtype == "auto":
             kv_cache_dtype = model_config.dtype
