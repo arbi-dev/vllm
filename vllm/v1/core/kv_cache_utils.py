@@ -875,6 +875,47 @@ def get_max_concurrency_for_kv_cache_config(
     """
     Get the maximum concurrency for the given KV cache configuration.
     """
+    if kv_cache_config.per_group_num_blocks is not None:
+        # Per-group pools (split allocation): the O(n) attention pool and
+        # the O(1) mamba pool have independent block budgets and entirely
+        # different scaling laws. The user-visible "GPU KV cache size in
+        # tokens" metric is meant to communicate the attention KV
+        # capacity (prefix-cache + per-request KV budget) — not the
+        # admission cap, which is bounded by `max_num_seqs` and reported
+        # separately by the scheduler. So compute concurrency from the
+        # O(n) groups only, matching the upstream single-pool formula
+        # `num_blocks / blocks_per_request`. Including O(1) Mamba groups
+        # (sized to max_num_seqs * mamba_blocks_per_seq at boot) here
+        # would cap the report at `max_num_seqs / mamba_blocks_per_seq`
+        # and hide the actual attention capacity that the alignment-tax
+        # fix in interface.py was meant to unlock.
+        from vllm.v1.kv_cache_interface import MambaSpec
+        on_indices = [
+            i
+            for i, g in enumerate(kv_cache_config.kv_cache_groups)
+            if not (
+                isinstance(g.kv_cache_spec, MambaSpec)
+                and g.kv_cache_spec.mamba_cache_mode != "all"
+            )
+        ]
+        # If somehow there are no O(n) groups, fall back to the minimum
+        # across all groups (preserves the old "limit by smallest pool"
+        # semantics for non-hybrid split-pool layouts).
+        if not on_indices:
+            on_indices = list(range(len(kv_cache_config.kv_cache_groups)))
+        max_concurrency: float | None = None
+        for i in on_indices:
+            group = kv_cache_config.kv_cache_groups[i]
+            pool_blocks = kv_cache_config.per_group_num_blocks[i]
+            spec = group.kv_cache_spec
+            max_req_bytes = spec.max_memory_usage_bytes(vllm_config)
+            blocks_per_req = max(1, cdiv(max_req_bytes, spec.page_size_bytes))
+            group_conc = pool_blocks / blocks_per_req
+            if max_concurrency is None or group_conc < max_concurrency:
+                max_concurrency = group_conc
+        assert max_concurrency is not None
+        return max_concurrency
+
     num_layer_per_group = max(
         len(group.layer_names) for group in kv_cache_config.kv_cache_groups
     )
