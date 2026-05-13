@@ -1443,10 +1443,26 @@ def get_kv_cache_config_from_groups(
             # over-counted in that case because the K=8 page was
             # multiplied by the K=4 group size, eating ~13% of attn
             # memory.
-            attn_total_per_block = sum(
-                len(g.layer_names) * g.kv_cache_spec.page_size_bytes
-                for g in on_groups
-            )
+            # Composite-spec detection: TQKV's smart-quant heterogeneous
+            # path collapses ALL full-attn layers into ONE group whose
+            # spec carries a ``per_layer_offsets`` map. In that case
+            # ``page_size_bytes`` is the SUM of per-layer slot bytes (the
+            # composite page) so the block-cost is page_size_bytes per
+            # block — NOT per layer. Multiplying by len(layer_names)
+            # would over-count by num_layers. The composite tensor is
+            # then shared across all layers (one tensor, multiple
+            # ``shared_by`` entries); per-layer slicing happens at the
+            # backend forward via ``_TQKV_LAYER_OFFSETS``.
+            attn_total_per_block = 0
+            for g in on_groups:
+                spec = g.kv_cache_spec
+                if getattr(spec, "per_layer_offsets", None) is not None:
+                    # Composite group: spec.page_size_bytes already aggregates.
+                    attn_total_per_block += spec.page_size_bytes
+                else:
+                    attn_total_per_block += (
+                        len(g.layer_names) * spec.page_size_bytes
+                    )
             num_blocks = (
                 int(attn_memory // attn_total_per_block)
                 if attn_total_per_block > 0
@@ -1463,14 +1479,28 @@ def get_kv_cache_config_from_groups(
             ]
 
             # Build tensors: attention layers get num_blocks, mamba gets
-            # mamba_blocks
+            # mamba_blocks. Composite on_groups emit ONE shared tensor
+            # whose ``shared_by`` lists every layer in the group; the
+            # backend's forward slices its per-layer byte range out of
+            # the composite at runtime (CUDAGraph-safe strided view).
             kv_cache_tensors = []
+            composite_emitted: set[int] = set()
             for i in range(group_size):
                 for group in on_groups:
-                    if i < len(group.layer_names):
+                    spec = group.kv_cache_spec
+                    if getattr(spec, "per_layer_offsets", None) is not None:
+                        # Composite: one tensor for the whole group,
+                        # emitted ONCE (not per layer-slot index).
+                        if id(group) in composite_emitted:
+                            continue
+                        composite_emitted.add(id(group))
                         kv_cache_tensors.append(KVCacheTensor(
-                            size=group.kv_cache_spec.page_size_bytes
-                                 * num_blocks,
+                            size=spec.page_size_bytes * num_blocks,
+                            shared_by=list(group.layer_names),
+                        ))
+                    elif i < len(group.layer_names):
+                        kv_cache_tensors.append(KVCacheTensor(
+                            size=spec.page_size_bytes * num_blocks,
                             shared_by=[group.layer_names[i]],
                         ))
                 for group in o1_groups:
@@ -1481,26 +1511,89 @@ def get_kv_cache_config_from_groups(
                             shared_by=[group.layer_names[i]],
                         ))
         else:
-            # No split needed — all groups are O(n). Use the original
-            # shared-tensor approach: group_size pools, each shared by
-            # one layer from each group.
-            page_size = get_uniform_page_size(
-                [group.kv_cache_spec for group in kv_cache_groups]
-            )
-            num_blocks = get_num_blocks(
-                vllm_config, group_size, available_memory, page_size
-            )
-            kv_cache_tensors = []
-            for i in range(group_size):
-                shared_by = []
-                for j in range(len(kv_cache_groups)):
-                    if i < len(kv_cache_groups[j].layer_names):
-                        shared_by.append(kv_cache_groups[j].layer_names[i])
-                kv_cache_tensors.append(
-                    KVCacheTensor(
-                        size=page_size * num_blocks, shared_by=shared_by
-                    )
+            # No split needed — all groups are O(n).
+            #
+            # Composite-spec path: a TQKV composite group carries
+            # ``per_layer_offsets`` and aggregates the page bytes of every
+            # layer it owns. The default shared-tensor build below would
+            # emit ``group_size`` tensors of ``composite_page * num_blocks``
+            # bytes each (since group_size == num_layers for a composite
+            # group), over-allocating by a factor of num_layers. Instead,
+            # emit ONE physical tensor per composite group whose
+            # ``shared_by`` lists every layer in the group.
+            composite_groups = [
+                g for g in kv_cache_groups
+                if getattr(g.kv_cache_spec, "per_layer_offsets", None) is not None
+            ]
+            non_composite_groups = [
+                g for g in kv_cache_groups
+                if getattr(g.kv_cache_spec, "per_layer_offsets", None) is None
+            ]
+            if not composite_groups:
+                page_size = get_uniform_page_size(
+                    [group.kv_cache_spec for group in kv_cache_groups]
                 )
+                num_blocks = get_num_blocks(
+                    vllm_config, group_size, available_memory, page_size
+                )
+                kv_cache_tensors = []
+                for i in range(group_size):
+                    shared_by = []
+                    for j in range(len(kv_cache_groups)):
+                        if i < len(kv_cache_groups[j].layer_names):
+                            shared_by.append(kv_cache_groups[j].layer_names[i])
+                    kv_cache_tensors.append(
+                        KVCacheTensor(
+                            size=page_size * num_blocks, shared_by=shared_by
+                        )
+                    )
+            else:
+                # Composite-bearing path. Compute num_blocks from the
+                # composite group's page_size (per-block bytes already
+                # aggregate all owned layers) plus any non-composite group
+                # cost, weighted by per-layer count.
+                total_per_block = 0
+                for g in composite_groups:
+                    total_per_block += g.kv_cache_spec.page_size_bytes
+                for g in non_composite_groups:
+                    total_per_block += (
+                        len(g.layer_names) * g.kv_cache_spec.page_size_bytes
+                    )
+                num_blocks = (
+                    int(available_memory // total_per_block)
+                    if total_per_block > 0
+                    else 0
+                )
+                num_blocks = max(num_blocks, 0)
+                num_blocks = may_override_num_blocks(vllm_config, num_blocks)
+                kv_cache_tensors = []
+                for g in composite_groups:
+                    kv_cache_tensors.append(KVCacheTensor(
+                        size=g.kv_cache_spec.page_size_bytes * num_blocks,
+                        shared_by=list(g.layer_names),
+                    ))
+                # Non-composite groups: legacy shared-tensor build, but
+                # only across the non-composite subset (composite-owned
+                # layers are addressed by the composite tensors above).
+                if non_composite_groups:
+                    nc_group_size = max(
+                        len(g.layer_names) for g in non_composite_groups
+                    )
+                    for i in range(nc_group_size):
+                        shared_by = []
+                        for g in non_composite_groups:
+                            if i < len(g.layer_names):
+                                shared_by.append(g.layer_names[i])
+                        if not shared_by:
+                            continue
+                        # Use the first non-composite group's page_size
+                        # (the legacy code assumed uniform page across
+                        # groups; preserve that for non-composite cohorts).
+                        nc_page = non_composite_groups[0].kv_cache_spec.page_size_bytes
+                        kv_cache_tensors.append(KVCacheTensor(
+                            size=nc_page * num_blocks,
+                            shared_by=shared_by,
+                        ))
 
     return KVCacheConfig(
         num_blocks=num_blocks,
