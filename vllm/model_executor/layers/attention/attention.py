@@ -617,6 +617,25 @@ class Attention(nn.Module, AttentionLayerBase):
         spec_kind = "sliding_window" if self.sliding_window is not None else "full"
         custom_spec_cls = self.attn_backend.get_kv_cache_spec_class(spec_kind)
         if custom_spec_cls is not None:
+            # Pass `layer_name` when the custom spec class accepts it.
+            # Plugin specs that vary their layout per layer (e.g. TQKV's
+            # smart-quant per-layer bit allocation) need this to pick the
+            # right per-layer bit width during construction; otherwise
+            # they fall back to the global max-bits default and the
+            # planner sees ~FP8-equivalent capacity instead of the
+            # smart-mix's 3.05× target. dataclasses.fields() check keeps
+            # the call backward-compatible with custom specs that don't
+            # declare this field.
+            from dataclasses import fields as _dc_fields
+            try:
+                _custom_field_names = {f.name for f in _dc_fields(custom_spec_cls)}
+            except TypeError:
+                _custom_field_names = set()
+            _layer_name_kw = (
+                {"layer_name": self.layer_name}
+                if "layer_name" in _custom_field_names
+                else {}
+            )
             if self.sliding_window is not None:
                 assert not vllm_config.model_config.use_mla, (
                     "MLA is not supported for slidingwindow"
@@ -628,6 +647,7 @@ class Attention(nn.Module, AttentionLayerBase):
                     head_size_v=self.head_size_v,
                     dtype=self.kv_cache_torch_dtype,
                     sliding_window=self.sliding_window,
+                    **_layer_name_kw,
                 )
             return custom_spec_cls(
                 block_size=block_size,
@@ -635,6 +655,7 @@ class Attention(nn.Module, AttentionLayerBase):
                 head_size=self.head_size,
                 head_size_v=self.head_size_v,
                 dtype=self.kv_cache_torch_dtype,
+                **_layer_name_kw,
             )
         if self.sliding_window is not None:
             assert not vllm_config.model_config.use_mla, (

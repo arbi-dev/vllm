@@ -1433,15 +1433,25 @@ def get_kv_cache_config_from_groups(
             attn_memory = available_memory - mamba_memory - _sampler_reserve_bytes
             if attn_memory < 0:
                 attn_memory = 0
-            attn_per_slot = sum(
-                g.kv_cache_spec.page_size_bytes for g in on_groups
+            # Per-block memory cost across ALL attention layers, summed
+            # over groups and weighted by each group's actual layer
+            # count. This mirrors the mamba_per_slot calc above and is
+            # correct when groups have non-uniform sizes (e.g. TQKV
+            # smart-quant produces 3× K=4 + 1× K=8 attention groups
+            # with different page sizes AND different layer counts).
+            # The earlier formula `attn_per_slot * max(group_size)`
+            # over-counted in that case because the K=8 page was
+            # multiplied by the K=4 group size, eating ~13% of attn
+            # memory.
+            attn_total_per_block = sum(
+                len(g.layer_names) * g.kv_cache_spec.page_size_bytes
+                for g in on_groups
             )
-            attn_group_size = max(
-                len(g.layer_names) for g in on_groups
-            ) if on_groups else 1
-            num_blocks = int(
-                attn_memory // attn_per_slot // attn_group_size
-            ) if attn_per_slot > 0 else 0
+            num_blocks = (
+                int(attn_memory // attn_total_per_block)
+                if attn_total_per_block > 0
+                else 0
+            )
             num_blocks = max(num_blocks, 0)
             num_blocks = may_override_num_blocks(vllm_config, num_blocks)
 
